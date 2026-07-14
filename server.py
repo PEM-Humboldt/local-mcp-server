@@ -3,7 +3,7 @@
 Servidor MCP local para datos geoespaciales H3-indexados en DuckDB.
 
 Corre 100% en local. 
-Sirve cualquier .parquet que esté en DATA_DIR como tool
+Sirve cualquier archivo .parquet que esté en DATA_DIR como tool
 'query' de DuckDB
 
 Uso:
@@ -151,15 +151,15 @@ def analyst_persona() -> str:
         "list_datasets y get_schema para conocer los datasets y sus rutas "
         "exactas. Usa las funciones H3 de DuckDB para operaciones espaciales "
         "(nunca ST_Intersects/ST_Within sobre datos ya indexados en hex). "
-        "Reporta siempre áreas en km² o acres, nunca conteos de hex crudos."
+        "Reporta siempre áreas en km², nunca conteos de hex crudos."
     )
 
 
 if __name__ == "__main__":
     datasets = _discover_datasets()
-    print(f"📂 DATA_DIR: {DATA_DIR}")
-    print(f"📊 Datasets encontrados: {len(datasets)} → {list(datasets)}")
-    print(f"🚀 Sirviendo MCP en http://127.0.0.1:{PORT}/mcp")
+    print(f"DATA_DIR: {DATA_DIR}")
+    print(f"Datasets encontrados: {len(datasets)} → {list(datasets)}")
+    print(f"Sirviendo MCP en http://127.0.0.1:{PORT}/mcp")
 
     app = mcp.streamable_http_app()
     app.router.redirect_slashes = False

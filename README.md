@@ -18,6 +18,7 @@ No sube nada a S3, no requiere `kubectl`, no necesita credenciales.
 Se recomienda tener un ambiente conda o un ambiente virtual para ejecutar todo lo siguente.
 
 ## 1. Instalar
+Clonar este repositorio
 
 ```bash
 cd local-mcp-server
@@ -62,7 +63,7 @@ python tif_to_h3_parquet.py \
 ⚠️ **Nota de tamaño/tiempo:** el raster de Coberturas es 48657×66749 píxeles
 (~27m/píxel) cubriendo todo Colombia — del orden de mil millones de píxeles
 válidos. A resolución h8 puede tardar bastante.
-Para pruebas o iterar rápido es suficiente con quédate en h6 o h7
+Para pruebas o iterar rápido es suficiente con un h6 o h7
 El h8 solo cuando sea algo más definitivo y preciso 
 
 El mismo comando sirve para la colección `Humedales` (humedal binario,
@@ -100,7 +101,7 @@ cuando sea un item del stac; usar `--source` con ruta local.
 polígonos: convierte cada `.geojson`/`.shp`/`.gpkg` en un parquet con una
 fila por cada (feature, hexágono) que esa geometría cubre — el modelo de
 "tiling" que usa el resto del ecosistema para límites administrativos, no
-el de "un valor agregado por celda" del raster.
+el de "un valor agregado por celda" del raster.    
 **Nota:** Para estas pruebas poner los archivos geojson en la carpeta ./data_previa
 
 ```bash
@@ -137,10 +138,9 @@ aparte — `ST_Read` de la extensión `spatial` lee GeoJSON directo).
 
 ### Ejemplo real: "cobertura natural en Antioquia"
 
-Con `departamentos_h8.parquet` y un recorte de Coberturas en Antioquia
-(`coberturas_antioquia_h8.parquet`, generado igual que en el paso 2 pero
-acotando el raster al bbox de Antioquia antes de convertir), la pregunta se
-responde con un `SEMI JOIN` por `h8` — nunca con una intersección geométrica
+Con `departamentos_h8.parquet` y  las Coberturas
+(`coberturas_h8.parquet`, generado igual que en el paso 2) se usa
+ un `SEMI JOIN` por `h8` — nunca con una intersección geométrica
 sobre el polígono:
 
 ```sql
@@ -151,7 +151,7 @@ WITH antioquia_hex AS (
 ),
 cobertura_en_antioquia AS (
     SELECT c.h8, c.class_label
-    FROM read_parquet('data/coberturas_antioquia_h8.parquet') c
+    FROM read_parquet('data/coberturash8.parquet') c
     SEMI JOIN antioquia_hex a USING (h8)
 )
 SELECT class_label,
@@ -171,12 +171,10 @@ Resultado real (recorte de Coberturas a la extensión de Antioquia):
 | Secundaria | 26,686 | 20,190.3 | 32.0% |
 | Natural | 7,806 | 5,887.4 | 9.4% |
 
-(El área total ≈ 63,020 km², consistente con el área oficial de Antioquia —
-la pequeña diferencia es el recorte por bbox rectangular vs. el polígono
-exacto del departamento en los bordes.)
+El área total ≈ 63,020 km², consistente con el área oficial de Antioquia —
 
 Este es exactamente el patrón que el LLM del chat de geo-agent generará solo
-si le preguntas "¿cuánta cobertura natural hay en Antioquia?": llama
+cuando se le pregunta "¿cuánta cobertura natural hay en Antioquia?": llama
 `list_datasets` → `get_schema` en ambos datasets → arma el `SEMI JOIN` de
 arriba.
 
@@ -187,9 +185,9 @@ python server.py
 ```
 
 ```
-📂 DATA_DIR: /ruta/a/local-mcp-server/data
-📊 Datasets encontrados: 2 → ['coberturas_h8', 'humedales_h8']
-🚀 Sirviendo MCP en http://127.0.0.1:8001/mcp
+DATA_DIR: /ruta/a/local-mcp-server/data
+Datasets encontrados: 2 → ['coberturas_h8', 'humedales_h8']
+Sirviendo MCP en http://127.0.0.1:8001/mcp
 ```
 
 ## 4. Conectar geo-agent a este servidor local
@@ -202,19 +200,5 @@ En el archivo de configuración de geo-agent-LIB `app/layers-input.json`:
 }
 ```
 
-Al regúntar al chat algo como *"¿qué porcentaje del área tiene cobertura
+Al pregúntar al chat algo como *"¿qué porcentaje del área tiene cobertura
 natural?"* — el agente llamará `list_datasets` → `get_schema` → `query`
-
-### Probar el servidor MCP sin pasar por geo-agent
-
-```json
-// .vscode/mcp.json
-{ "servers": { "duckdb-local": { "url": "http://localhost:8001/mcp" } } }
-```
-
-o con la CLI de Claude Code:
-
-```bash
-claude mcp add --transport http duckdb-local http://localhost:8001/mcp
-```
-

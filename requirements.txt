@@ -1,0 +1,10 @@
+mcp
+duckdb==1.5.4
+uvicorn
+tabulate
+pandas
+requests
+
+# Requiere además el binario de GDAL (gdalinfo, gdal_translate) en el PATH.
+# Ubuntu/Debian:  sudo apt install gdal-bin
+# conda:          conda install -c conda-forge gdal

@@ -17,6 +17,70 @@ Además de este servidor, también se tienen los scripts que convierten los dato
 
 No sube nada a S3, no requiere `kubectl`, no necesita credenciales.
 
+## Arquitectura
+
+### Vista general del ecosistema
+
+Este servidor es una pieza dentro de un ecosistema de tres repositorios: la app
+web (`geo-agent-LIB`), la librería del mapa/agente que esa app carga desde CDN
+(`geo-agent`), y este servidor de datos local.
+
+```mermaid
+flowchart LR
+    User(("Persona<br/>usando el chat"))
+    LIB["geo-agent-LIB<br/>app: datasets, branding,<br/>layers-input.json"]
+    LibCore["geo-agent<br/>librería: mapa, chat, agente LLM<br/>(cargada desde CDN)"]
+    MCP["local-mcp-server<br/>(este repo)<br/>SQL sobre datos H3 locales"]
+    STAC["Catálogos STAC<br/>local + público"]
+    LLM[["LLM externo<br/>OpenRouter / Bedrock (BYOK)"]]
+
+    User <-->|"pregunta →<br/>← mapa + respuesta"| LIB
+    LIB <-->|carga módulos / eventos UI| LibCore
+    LibCore -->|metadata + capas visuales| STAC
+    LibCore <-->|Chat Completions API| LLM
+    LibCore <-->|MCP · Streamable HTTP| MCP
+```
+
+`geo-agent-LIB` es la app configurada (datasets, branding); los módulos que la
+hacen funcionar (mapa, chat, agente LLM) vienen de la librería `geo-agent`,
+cargada desde CDN. Esa librería habla con tres sistemas externos: el catálogo
+STAC (metadata + capas visuales), un LLM externo (razonamiento del chat), y
+este servidor (SQL sobre datos H3 propios).
+
+### Este repositorio en detalle
+
+```mermaid
+flowchart TD
+    Client[["Cliente MCP<br/>(geo-agent, en el navegador)"]]
+    Map[["Mapa<br/>(MapLibre GL, en el navegador)"]]
+
+    subgraph Repo["local-mcp-server"]
+        direction TB
+        Tools["Tools MCP (server.py)<br/>list_local_datasets · get_local_schema · query<br/>get_stac_details · compute_area<br/>summarize_by_category · join_datasets_by_h3<br/>register_hex_tiles · get_hex_tile_status"]
+        Engine[("DuckDB<br/>+ extensiones h3, spatial")]
+        Data[("data/*.parquet<br/>H3-indexado")]
+        Tiles[("tiles/*.geojson")]
+        Conv["Herramientas de conversión a H3<br/>tif_to_h3_parquet.py · vector_to_h3_parquet.py"]
+
+        Tools --> Engine --> Data
+        Tools --> Tiles
+        Conv --> Data
+    end
+
+    Raster[("Raster COG /<br/>GeoTIFF")] --> Conv
+    Vector[("Vector GeoJSON /<br/>SHP / GPKG")] --> Conv
+
+    Client <-->|"MCP · Streamable HTTP<br/>localhost:8001/mcp"| Tools
+    Tiles -.->|"GET /tiles/&lt;hash&gt;.geojson"| Map
+```
+
+`server.py` expone los tools MCP; todos leen/escriben a través de DuckDB (con
+las extensiones `h3` y `spatial` cargadas). Los `.parquet` de `data/` se
+generan una sola vez, offline, con los dos scripts de conversión — nunca en
+tiempo de consulta. `register_hex_tiles` es la única excepción que escribe en
+caliente: genera un `.geojson` en `tiles/` y lo sirve por HTTP directo al mapa,
+sin pasar por el cliente MCP.
+
 Se recomienda tener un ambiente conda o un ambiente virtual para ejecutar todo lo siguente.
 
 ## 1. Instalar

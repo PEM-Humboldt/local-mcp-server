@@ -21,7 +21,7 @@ No sube nada a S3, no requiere `kubectl`, no necesita credenciales.
 
 ### Vista general del ecosistema
 
-Este servidor es una pieza dentro de un ecosistema de tres repositorios: la app web (`geo-agent-LIB`), la librería del mapa/agente que esa app carga desde CDN (`geo-agent`), y este servidor de datos local.
+Este servidor es una pieza dentro de un ecosistema de tres repositorios: la app web (`geo-agent-LIB`), la librería del mapa/agente que esa app carga desde CDN ([`geo-agent`](https://github.com/boettiger-lab/geo-agent)), y este servidor de datos local.
 
 ```mermaid
 flowchart LR
@@ -39,7 +39,7 @@ flowchart LR
     LibCore <-->|MCP · Streamable HTTP| MCP
 ```
 
-`geo-agent-LIB` es la app configurada (datasets propios, direcciones propias); los módulos que la hacen funcionar (mapa, chat, agente LLM) vienen de la librería (`geo-agent`)[https://github.com/boettiger-lab/geo-agent], cargada desde CDN. Esa librería habla con tres sistemas externos: el catálogo STAC (metadata + capas visuales), un LLM externo (razonamiento del chat), y este servidor (SQL sobre datos H3 propios).
+`geo-agent-LIB` es la app configurada (datasets propios, direcciones propias); los módulos que la hacen funcionar (mapa, chat, agente LLM) vienen de la librería [`geo-agent`](https://github.com/boettiger-lab/geo-agent), cargada desde CDN. Esa librería habla con tres sistemas externos: el catálogo STAC (metadata + capas visuales), un LLM externo (razonamiento del chat), y este servidor (SQL sobre datos H3 propios).
 
 ### Este repositorio en detalle
 

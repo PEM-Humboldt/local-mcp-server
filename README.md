@@ -1,7 +1,7 @@
 # Servidor MCP local (DuckDB + H3)
 
 En este repositorio se creó el servidor MCP, el cual funciona como intermediario para hacer que un modelo LLM pueda establecer conexión y hacer consultas a una base de datos SQL.   
-Además de este servidor, también se tienen los scripts que convierten los datos geoespaciales en una base de datps relacional en gormato H3.
+Además de este servidor, también se tienen los scripts que convierten los datos geoespaciales en una base de datos relacional en formato H3.
 
 1. **`tif_to_h3_parquet.py`** — convierte un raster (COG local, remoto, o
    resuelto desde un item STAC) en un `.parquet` indexado en H3: una fila
@@ -12,10 +12,8 @@ Además de este servidor, también se tienen los scripts que convierten los dato
    cada combinación de feature y hexágono que esa geometría cubre — útil
    para límites administrativos, páramos, cuencas y cualquier capa que
    luego se quiera cruzar (por `JOIN`) con datos raster ya indexados en H3.
-3. **`server.py`** — un servidor MCP que sirve esos `.parquet` locales con la herramienta `query` de SQL DuckDB, igual que el
-   servidor público `duckdb-mcp.nrp-nautilus.io`, pero apuntando a mi el propio disco.
+3. **`server.py`** — un servidor MCP que sirve esos `.parquet` locales con la herramienta `query` de SQL DuckDB.
 
-No sube nada a S3, no requiere `kubectl`, no necesita credenciales.
 
 ## Arquitectura
 

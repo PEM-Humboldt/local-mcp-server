@@ -24,14 +24,14 @@ Este servidor es una pieza dentro de un ecosistema de tres repositorios: la app 
 ```mermaid
 flowchart LR
     User(("Persona<br/>usando el chat"))
-    LIB["geo-agent-LIB<br/>app: datasets, branding,<br/>layers-input.json"]
-    LibCore["geo-agent<br/>librería: mapa, chat, agente LLM<br/>(cargada desde CDN)"]
+    LIB["geo-agent-LIB<br/>configuración: layers-input.json,<br/>system-prompt.md, index.html"]
+    LibCore["geo-agent<br/>librería: mapa, chat, agente LLM<br/>(corre en el navegador)"]
     MCP["local-mcp-server<br/>(este repo)<br/>SQL sobre datos H3 locales"]
     STAC["Catálogos STAC<br/>local + público"]
-    LLM[["LLM externo<br/>OpenRouter / Bedrock (BYOK)"]]
+    LLM[["LLM externo<br/>OpenRouter (API key del usuario)"]]
 
-    User <-->|"pregunta →<br/>← mapa + respuesta"| LIB
-    LIB <-->|carga módulos / eventos UI| LibCore
+    User <-->|"pregunta →<br/>← mapa + respuesta"| LibCore
+    LIB -->|configuración al arrancar| LibCore
     LibCore -->|metadata + capas visuales| STAC
     LibCore <-->|Chat Completions API| LLM
     LibCore <-->|MCP · Streamable HTTP| MCP

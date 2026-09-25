@@ -37,7 +37,7 @@ flowchart LR
     LibCore <-->|MCP · Streamable HTTP| MCP
 ```
 
-`geo-agent-LIB` es la app configurada (datasets propios, direcciones propias); los módulos que la hacen funcionar (mapa, chat, agente LLM) vienen de la librería [`geo-agent`](https://github.com/boettiger-lab/geo-agent), cargada desde CDN. Esa librería habla con tres sistemas externos: el catálogo STAC (metadata + capas visuales), un LLM externo (razonamiento del chat), y este servidor (SQL sobre datos H3 propios).
+`geo-agent-LIB` es la app configurada, por tanto solo aporta configuración (datasets propios, prompt, direcciones); no tiene código propio. Los módulos que la hacen funcionar (mapa, chat, agente LLM) vienen de la librería [`geo-agent`](https://github.com/boettiger-lab/geo-agent), cargada desde CDN. Esa librería habla con tres sistemas externos: el catálogo STAC (metadata + capas visuales), un LLM externo (razonamiento del chat), y este servidor (SQL sobre datos H3 propios).
 
 ### Este repositorio en detalle
 

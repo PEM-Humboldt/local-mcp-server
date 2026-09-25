@@ -48,10 +48,10 @@ flowchart TD
 
     subgraph Repo["local-mcp-server"]
         direction TB
-        Tools["Tools MCP (server.py)<br/>list_local_datasets · get_local_schema · query<br/>get_stac_details · compute_area<br/>summarize_by_category · join_datasets_by_h3<br/>register_hex_tiles · get_hex_tile_status"]
+        Tools["Tools MCP (server.py)<br/>list_local_datasets · get_local_schema · query<br/>get_stac_details · compute_area<br/>summarize_by_category · join_datasets_by_h3<br/>register_hex_tiles · get_hex_tile_status<br/>+ prompt geospatial-analyst"]
         Engine[("DuckDB<br/>+ extensiones h3, spatial")]
         Data[("data/*.parquet<br/>H3-indexado")]
-        Tiles[("tiles/*.geojson")]
+        Tiles[("tiles/<br/>*.geojson + *.json (metadatos)")]
         Conv["Herramientas de conversión a H3<br/>tif_to_h3_parquet.py · vector_to_h3_parquet.py"]
 
         Tools --> Engine --> Data
@@ -63,10 +63,15 @@ flowchart TD
     Vector[("Vector GeoJSON /<br/>SHP / GPKG")] --> Conv
 
     Client <-->|"MCP · Streamable HTTP<br/>localhost:8001/mcp"| Tools
-    Tiles -.->|"GET /tiles/&lt;hash&gt;.geojson"| Map
+    Client -->|"add_hex_tile_layer<br/>(tool local, con la URL)"| Map
+    Tools -.->|"GET /tiles/&lt;hash&gt;.geojson<br/>(ruta HTTP de server.py)"| Map
+
 ```
 
-`server.py` expone los tools MCP; todos leen/escriben a través de DuckDB (con las extensiones `h3` y `spatial` cargadas). Los `.parquet` de `data/` se generan una sola vez, offline, con los dos scripts de conversión — nunca en tiempo de consulta. `register_hex_tiles` es la única excepción que escribe en caliente: genera un `.geojson` en `tiles/` y lo sirve por HTTP directo al mapa, sin pasar por el cliente MCP.
+**Flujo de una consulta.** El cliente MCP (`geo-agent`, corriendo en el navegador) se conecta a `server.py` por MCP sobre Streamable HTTP (`localhost:8001/mcp`) y llama a sus tools. Los tools que consultan datos (`list_local_datasets`, `get_local_schema`, `get_stac_details`, `query`, `compute_area`, `summarize_by_category` y `join_datasets_by_h3`) abren una conexión DuckDB con las extensiones `h3` y `spatial` y leen los `.parquet` de `data/`, sin modificarlos: esos archivos se generan una sola vez, offline, con `tif_to_h3_parquet.py` (rasters) y `vector_to_h3_parquet.py` (vectores), nunca en tiempo de consulta. `register_hex_tiles` es la única excepción que escribe en caliente: ejecuta un agregado SQL sobre esos datos y guarda el resultado en `tiles/` como un `<hash>.geojson` más un `<hash>.json` de metadatos, que `get_hex_tile_status` consulta. Para mostrarlo, el cliente llama al tool local del mapa `add_hex_tile_layer` con la URL que devolvió `register_hex_tiles`, y MapLibre descarga el GeoJSON directamente por HTTP desde la ruta `/tiles/<hash>.geojson` del mismo `server.py`, sin pasar por el protocolo MCP. Como la página (p. ej. `localhost:8000`) y el servidor (`localhost:8001`) están en puertos distintos, el servidor habilita CORS para que el navegador pueda hacer esas peticiones.
+
+
+
 
 Se recomienda tener un ambiente conda o un ambiente virtual para  ejecutar todo lo siguente.
 

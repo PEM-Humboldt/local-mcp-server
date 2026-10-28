@@ -262,17 +262,15 @@ define `PG_DSN`, todo funciona exactamente igual que sin esta sección.
 | `query` (existente) | Cruce Postgres × parquet H3 vía `postgres_query('pg', '...')` |
 
 
-**Rol de solo lectura para el MCP**: NUNCA se debe conectar el MCP con el dueño de la base.
+**Rol de solo lectura para el MCP**: NUNCA se debe conectar el MCP con el dueño de la base. Siempre se debe tener un usuario de solo lectura y este es el que debe estar configurado en la conexión al servidor 
 
 
-Solo lo que el rol puede leer aparece en `list_pg_tables` (por eso las tablas
-`tiger`/`topology` de la imagen de PostGIS quedan fuera).
-
-**Arrancar con la base**: la cadena de conexión está en `pg.env`, la cual debe ser:
+**Levantar el servidor con la base**: la cadena de conexión está en `pg.env`, la cual debe ser:
 ```bash
 export PG_DSN="postgresql://<usuario>:<contraseña>@<host>:<puerto>/<base_de_datos>"
 
 ```
+Una vez se tiene correctamente configurado el `pg.env`, se pueden ejecutar los siguente comendos para levantar el sevidor con las herramientas de postgres incluídas.
 
 ```bash
 source pg.env

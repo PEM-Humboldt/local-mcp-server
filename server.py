@@ -11,8 +11,13 @@ Uso:
     # → escuchando en http://127.0.0.1:8001/mcp
 
 Variables de entorno:
-    DATA_DIR   carpeta con los .parquet a servir (default: ./data)
-    PORT       puerto HTTP (default: 8001 )
+    DATA_DIR       carpeta con los .parquet a servir (default: ./data)
+    PORT           puerto HTTP (default: 8001 )
+    PG_DSN         (opcional) cadena de conexión a una base PostgreSQL/PostGIS,
+                   p. ej. postgresql://mcp_reader:***@127.0.0.1:5433/cifras.
+    PG_TIMEOUT_MS  tope por consulta en Postgres (default: 60000)
+    PG_GUIDE       markdown con notas de dominio de la base Postgres que se
+                   anexan a list_pg_tables (default: ./pg-guide.md, si existe)
 
 Para conectar desde geo-agent se pone en layers-input.json (o config.json local):
     "mcp_url": "http://localhost:8001/mcp"
@@ -24,8 +29,11 @@ import re
 from pathlib import Path
 
 import duckdb
+import pandas as pd
+import psycopg
 import uvicorn
 from mcp.server.fastmcp import FastMCP
+from psycopg import sql as pgsql
 from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse, PlainTextResponse
 from starlette.routing import Route
@@ -33,15 +41,55 @@ from starlette.routing import Route
 DATA_DIR = Path(os.environ.get("DATA_DIR", Path(__file__).parent / "data")).resolve()
 TILES_DIR = Path(os.environ.get("TILES_DIR", Path(__file__).parent / "tiles")).resolve()
 PORT = int(os.environ.get("PORT", "8001"))
+PG_DSN = os.environ.get("PG_DSN") or None
+PG_TIMEOUT_MS = int(os.environ.get("PG_TIMEOUT_MS", "60000"))
+PG_GUIDE = Path(os.environ.get("PG_GUIDE", Path(__file__).parent / "pg-guide.md"))
 
 mcp = FastMCP("local-duckdb-geo", stateless_http=True)
 
+# Una consulta DuckDB "toca" Postgres solo si referencia el catálogo adjunto
+# `pg` (pg.public.tabla) o la función postgres_query('pg', ...).
+_PG_REF_RE = re.compile(r"\bpg\s*\.|\bpostgres_query\s*\(", re.IGNORECASE)
 
-def get_connection() -> duckdb.DuckDBPyConnection:
-    """Conexión nueva y aislada por request — nada de estado entre queries."""
+
+def _mentions_pg(sql: str) -> bool:
+    return bool(_PG_REF_RE.search(sql or ""))
+
+
+def _redact(msg) -> str:
+    """Quita la contraseña de PG_DSN de cualquier texto que vuelva al LLM."""
+    text = str(msg)
+    if PG_DSN:
+        try:
+            pwd = psycopg.conninfo.conninfo_to_dict(PG_DSN).get("password")
+        except Exception:
+            pwd = None
+        text = text.replace(PG_DSN, "<PG_DSN>")
+        if pwd:
+            text = text.replace(str(pwd), "***")
+    return text
+
+
+def get_connection(attach_pg: bool = False) -> duckdb.DuckDBPyConnection:
+    """Conexión nueva y aislada por request — nada de estado entre queries.
+    Con attach_pg=True adjunta además la base Postgres (solo lectura) como
+    catálogo `pg`; solo se pide cuando el SQL la menciona, así las consultas
+    sobre parquet no dependen de que Postgres esté arriba."""
     con = duckdb.connect(":memory:")
     con.execute("INSTALL h3 FROM community; LOAD h3;")
     con.execute("INSTALL spatial; LOAD spatial;")
+    if attach_pg:
+        if not PG_DSN:
+            con.close()
+            raise RuntimeError("Este servidor no tiene base Postgres configurada (PG_DSN).")
+        try:
+            con.execute("INSTALL postgres; LOAD postgres;")
+            # ATTACH no admite parámetros preparados: se escapa la comilla simple.
+            dsn = PG_DSN.replace("'", "''")
+            con.execute(f"ATTACH '{dsn}' AS pg (TYPE postgres, READ_ONLY)")
+        except Exception as e:
+            con.close()
+            raise RuntimeError(f"No se pudo adjuntar Postgres: {_redact(e)}") from None
     return con
 
 
@@ -101,7 +149,7 @@ def query(sql_query: str) -> str:
     """El docstring real (usado como descripción del tool para
     el LLM) se arma más abajo, para poder inyectar DATA_DIR dinámicamente."""
     try:
-        con = get_connection()
+        con = get_connection(attach_pg=_mentions_pg(sql_query))
         result = con.sql(sql_query)
         if result is None:
             con.close()
@@ -120,7 +168,7 @@ def query(sql_query: str) -> str:
             )
         return md
     except Exception as e:
-        return f"Error SQL: {e}"
+        return f"Error SQL: {_redact(e)}"
 
 
 query.__doc__ = f"""
@@ -151,6 +199,23 @@ Reglas de agregación:
   (JOIN) dos datasets por columna hN.
 
 Extensiones cargadas en cada conexión: h3, spatial.
+"""
+
+if PG_DSN:
+    query.__doc__ += """
+Base Postgres (solo lectura): este servidor también tiene una base PostgreSQL/
+PostGIS — ver list_pg_tables / get_pg_schema. Para consultarla SOLA usa el tool
+query_pg (SQL Postgres nativo, PostGIS, índices). Usa ESTE tool `query` solo
+para CRUZAR Postgres con los parquet H3, envolviendo el SQL de Postgres en
+postgres_query('pg', '<sql postgres>') — el filtro corre dentro de Postgres con
+sus índices. Ej. conteo de puntos de Postgres por hexágono H3 (las comillas
+simples dentro del SQL de Postgres se duplican):
+  SELECT h3_latlng_to_cell(<col_lat>, <col_lon>, 8) AS h8, COUNT(*) n
+  FROM postgres_query('pg', 'SELECT <col_lat>, <col_lon> FROM <tabla>
+                             WHERE <col_indexada> = ''<valor>''')
+  GROUP BY 1
+Evita leer tablas grandes como pg.public.<tabla> directamente: DuckDB las
+traería completas a memoria.
 """
 
 mcp.tool(name="query", description=query.__doc__)(query)
@@ -296,7 +361,10 @@ def register_hex_tiles(sql: str, agg: str = "COUNT") -> dict:
         meta["status"] = "done"
         return meta
 
-    con = get_connection()
+    try:
+        con = get_connection(attach_pg=_mentions_pg(sql))
+    except Exception as e:
+        return {"status": "failed", "error": str(e)}
     try:
         probe = con.execute(f"SELECT * FROM ({sql}) LIMIT 0")
         cols = [d[0] for d in probe.description]
@@ -328,7 +396,7 @@ def register_hex_tiles(sql: str, agg: str = "COUNT") -> dict:
             LIMIT {_HEX_LIMIT + 1}
         """).fetchall()
     except Exception as e:
-        return {"status": "failed", "error": f"Error SQL: {e}"}
+        return {"status": "failed", "error": f"Error SQL: {_redact(e)}"}
     finally:
         con.close()
 
@@ -582,12 +650,6 @@ def join_datasets_by_h3(
                 return f"'{resolution_col}' no existe en ambos datasets. A: {cols_a} | B: {cols_b}"
             join_expr = f'a."{resolution_col}" = b."{resolution_col}"'
         else:
-            # h0 se excluye a propósito: es la partición global (casi todo
-            # dataset la tiene), no una resolución de análisis real — usarla
-            # sola como llave de join produce un cruce casi-cartesiano.
-            # Entre las resoluciones compartidas reales, la MÁS FINA es
-            # preferible (más precisa) — ambas son igual de "gratis" porque
-            # ya existen como columnas nativas en los dos datasets.
             shared = sorted((set(res_a) & set(res_b)) - {0}, reverse=True)
             if shared:
                 res_used = f"h{shared[0]}"
@@ -624,9 +686,228 @@ def join_datasets_by_h3(
     return f"SQL usado:\n```sql\n{sql.strip()}\n```\n\nVista previa:\n{preview}"
 
 
+# -------------------------------------------------------------------------
+# Base PostgreSQL/PostGIS (PG_DSN) — base de datos de síntesis de cifras 
+# -------------------------------------------------------------------------
+_PG_ROW_LIMIT = 50
+_PG_CELL_MAX = 300
+_PG_SAMPLE_COLS = 12
+_PG_OUT_MAX = 20000
+_PG_KINDS = {"r": "tabla", "p": "tabla", "v": "vista", "m": "vista materializada"}
+# Tablas/vistas internas de PostGIS, sin valor para el análisis.
+_PG_HIDDEN = {"spatial_ref_sys", "geometry_columns", "geography_columns"}
+
+
+def get_pg_connection() -> psycopg.Connection:
+    """Conexión nueva por request, en solo lectura y con timeout. El rol de
+    PG_DSN debe tener solo SELECT."""
+    if not PG_DSN:
+        raise RuntimeError("Este servidor no tiene base Postgres configurada (PG_DSN).")
+    return psycopg.connect(
+        PG_DSN,
+        connect_timeout=5,
+        options=f"-c statement_timeout={PG_TIMEOUT_MS} -c default_transaction_read_only=on",
+    )
+
+
+def _pg_relations(con: psycopg.Connection) -> dict[str, dict]:
+    """Tablas/vistas del esquema public que el rol puede leer. Usa solo el
+    catálogo (reltuples = conteo estimado): nada de COUNT(*) sobre tablas
+    de millones de filas, y ningún lock sobre las tablas."""
+    rows = con.execute("""
+        SELECT c.oid, c.relname, format('%I.%I', n.nspname, c.relname),
+               c.relkind, c.reltuples::bigint, c.relispopulated,
+               obj_description(c.oid, 'pg_class'),
+               (SELECT string_agg(format('%s %s(SRID %s)', g.f_geometry_column, g.type, g.srid), ', ')
+                  FROM geometry_columns g
+                 WHERE g.f_table_schema = 'public' AND g.f_table_name = c.relname)
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'v', 'm')
+          AND has_table_privilege(c.oid, 'SELECT')
+        ORDER BY c.relname
+    """).fetchall()
+    return {
+        name: {"oid": oid, "ref": ref, "kind": _PG_KINDS[kind], "rows": n,
+               "populated": populated, "comment": comment, "geom": geom}
+        for oid, name, ref, kind, n, populated, comment, geom in rows
+        if name not in _PG_HIDDEN
+    }
+
+
+def _pg_markdown(cur, rows) -> str:
+    """Filas de un cursor psycopg → markdown, recortando textos largos
+    (geometrías crudas, GeoJSON) para no inundar el contexto del LLM."""
+    df = pd.DataFrame(rows, columns=[d.name for d in cur.description])
+    df = df.map(lambda v: v[:_PG_CELL_MAX] + "…" if isinstance(v, str) and len(v) > _PG_CELL_MAX else v)
+    return df.to_markdown(index=False)
+
+
+def list_pg_tables() -> str:
+    """Lista las tablas y vistas de la base PostgreSQL/PostGIS de este
+    servidor: tipo, filas aproximadas, columnas de geometría y notas de
+    dominio (qué tabla usar para cada tipo de pregunta). Llama esto primero,
+    antes de escribir SQL para query_pg.
+    NO confundir con list_local_datasets (parquet H3, tool `query`) ni con el
+    catálogo STAC del mapa: son tres catálogos distintos."""
+    try:
+        with get_pg_connection() as con:
+            rels = _pg_relations(con)
+    except Exception as e:
+        return f"Error conectando a Postgres: {_redact(e)}"
+    if not rels:
+        return "La base Postgres no tiene tablas legibles en el esquema public."
+    lines = ["Tablas Postgres (esquema public). Los nombres con mayúsculas van entre comillas dobles en SQL.\n"]
+    for name, r in rels.items():
+        parts = [f"- **{name}** ({r['kind']})",
+                 f"~{r['rows']:,} filas" if r["rows"] >= 0 else "filas sin estimar"]
+        if r["geom"]:
+            parts.append(f"geometría: {r['geom']}")
+        if not r["populated"]:
+            parts.append("SIN POBLAR — todavía no se puede consultar")
+        if r["comment"]:
+            parts.append(r["comment"])
+        lines.append(" — ".join(parts))
+    out = "\n".join(lines)
+    if PG_GUIDE.is_file():
+        out += "\n\n" + PG_GUIDE.read_text()
+    return out
+
+
+def get_pg_schema(table: str) -> str:
+    """Muestra el nombre exacto para SQL, las columnas/tipos, las geometrías,
+    los ÍNDICES y una muestra de 3 filas de una tabla/vista de la base
+    Postgres. Usa el nombre exacto devuelto por list_pg_tables. Llama esto
+    antes de escribir SQL para query_pg: filtrar por columnas indexadas es lo
+    que hace rápida una consulta sobre tablas de millones de filas."""
+    try:
+        with get_pg_connection() as con:
+            rels = _pg_relations(con)
+            if table not in rels:
+                return f"Tabla desconocida: '{table}'. Disponibles: {', '.join(rels) or '(ninguna)'}"
+            r = rels[table]
+            ident = pgsql.Identifier("public", table)
+            cols = con.execute("""
+                SELECT a.attname, format_type(a.atttypid, a.atttypmod),
+                       col_description(a.attrelid, a.attnum)
+                FROM pg_attribute a
+                WHERE a.attrelid = %s AND a.attnum > 0 AND NOT a.attisdropped
+                ORDER BY a.attnum
+            """, [r["oid"]]).fetchall()
+            # Solo la parte "USING método (columnas)"; DISTINCT porque una tabla
+            # puede tener índices duplicados con otro nombre.
+            idx = con.execute("""
+                SELECT DISTINCT i.indisunique,
+                       substring(pg_get_indexdef(i.indexrelid) FROM 'USING (.*)$') AS d
+                FROM pg_index i WHERE i.indrelid = %s ORDER BY d
+            """, [r["oid"]]).fetchall()
+
+            rows_txt = f"~{r['rows']:,} filas" if r["rows"] >= 0 else "filas sin estimar"
+            out = [f"### {table} ({r['kind']}, {rows_txt})",
+                   f"Nombre exacto para SQL: `{r['ref']}`"]
+            if r["comment"]:
+                out.append(r["comment"])
+            out.append("\nColumnas:")
+            out += [f"- `{c}` ({t})" + (f" — {d}" if d else "") for c, t, d in cols]
+            if r["geom"]:
+                out.append(
+                    f"\nGeometría: {r['geom']}. Para verla usa ST_AsText/ST_AsGeoJSON; para "
+                    "cruces espaciales ST_Intersects/ST_Contains (usan el índice GiST); área "
+                    "en m² con ST_Area(geom::geography)."
+                )
+            if idx:
+                out.append("\nÍndices (filtra/une por estas columnas para consultas rápidas):")
+                for unique, d in idx:
+                    out.append(f"- {'UNIQUE ' if unique else ''}{d}")
+            else:
+                out.append("\nSin índices: en tablas grandes evita filtros que obliguen a leerla completa.")
+
+            if not r["populated"]:
+                out.append("\nVista materializada SIN POBLAR — todavía no se puede consultar.")
+                return "\n".join(out)
+            plain = [c for c, t, _ in cols if not t.startswith(("geometry", "geography"))]
+            shown = plain[:_PG_SAMPLE_COLS]
+            sample_sql = pgsql.SQL("SELECT {} FROM {} LIMIT 3").format(
+                pgsql.SQL(", ").join(map(pgsql.Identifier, shown)), ident)
+            with con.cursor() as cur:
+                cur.execute(sample_sql)
+                sample = cur.fetchall()
+                if sample:
+                    note = (f", primeras {len(shown)} de {len(plain)} columnas"
+                            if len(shown) < len(plain) else "")
+                    out.append(f"\nMuestra (3 filas, sin geometría{note}):\n" + _pg_markdown(cur, sample))
+    except Exception as e:
+        return f"Error Postgres: {_redact(e)}"
+    return "\n".join(out)
+
+
+def query_pg(sql_query: str) -> str:
+    """El docstring real (descripción del tool para el LLM) se arma más
+    abajo, para poder inyectar PG_TIMEOUT_MS."""
+    stmt = sql_query.strip().rstrip(";").strip()
+    if not re.match(r"(select|with|values|table|\()", stmt, re.IGNORECASE):
+        return "Error SQL (Postgres): query_pg solo acepta consultas de lectura (SELECT o WITH ... SELECT)."
+    try:
+        with get_pg_connection() as con, con.cursor(name="mcp_query") as cur:
+            cur.execute(stmt)
+            rows = cur.fetchmany(_PG_ROW_LIMIT + 1)
+            md = _pg_markdown(cur, rows[:_PG_ROW_LIMIT]) if rows else None
+    except psycopg.errors.QueryCanceled:
+        return (
+            f"Error SQL (Postgres): la consulta superó el límite de {PG_TIMEOUT_MS // 1000}s y se "
+            "canceló. Usa las tablas/vistas de resumen si existen, o filtra por columnas "
+            "indexadas (get_pg_schema las lista)."
+        )
+    except Exception as e:
+        return f"Error SQL (Postgres): {_redact(e)}"
+    if md is None:
+        return "Sin resultados."
+    if len(md) > _PG_OUT_MAX:
+        md = md[:_PG_OUT_MAX] + (
+            f"\n\n[Resultado recortado a {_PG_OUT_MAX} caracteres: selecciona solo las "
+            "columnas necesarias en vez de SELECT *.]"
+        )
+    if len(rows) > _PG_ROW_LIMIT:
+        md += (
+            "\n\nMostrando solo las primeras 50 filas — es una vista previa, "
+            "no el conteo real. Usa COUNT/SUM/AVG para totales."
+        )
+    return md
+
+
+query_pg.__doc__ = f"""
+Ejecuta SQL PostgreSQL/PostGIS de SOLO LECTURA sobre la base Postgres de este
+servidor (no sobre los parquet H3 — esos van por el tool `query`).
+
+ANTES de escribir SQL:
+1. Llama list_pg_tables: tablas, tamaño aproximado y notas de qué tabla usar.
+2. Llama get_pg_schema(tabla): nombre exacto, columnas, índices y muestra.
+   Nunca adivines nombres de tabla, columna ni valores codificados.
+
+Reglas:
+- Una sola sentencia SELECT (o WITH ... SELECT). La sesión es de solo lectura.
+- Nombres con mayúsculas van entre comillas dobles: "RESGUARDOS", "DESCRIP".
+- Tablas de millones de filas: filtra por columnas indexadas y agrega
+  (COUNT/SUM/GROUP BY); si hay tablas/vistas de resumen precalculadas,
+  úsalas primero. Cada consulta tiene un límite de {PG_TIMEOUT_MS // 1000}s.
+- Devuelve como máximo 50 filas (vista previa) — para totales usa COUNT/SUM.
+- Aquí SÍ hay PostGIS: ST_Intersects/ST_Contains/ST_DWithin, y área en m² con
+  ST_Area(geom::geography). No selecciones la columna geom cruda (usa
+  ST_AsText/ST_AsGeoJSON u omítela); textos de más de {_PG_CELL_MAX} caracteres se recortan.
+- Para cruzar Postgres con los parquet H3, o para pintar resultados como
+  hexágonos (register_hex_tiles), usa el tool `query` con
+  postgres_query('pg', '<sql postgres>').
+"""
+
+if PG_DSN:
+    mcp.tool()(list_pg_tables)
+    mcp.tool()(get_pg_schema)
+    mcp.tool(name="query_pg", description=query_pg.__doc__)(query_pg)
+
+
 @mcp.prompt("geospatial-analyst")
 def analyst_persona() -> str:
-    return (
+    text = (
         "Eres un analista geoespacial. Antes de cualquier consulta SQL, llama "
         "list_local_datasets y get_local_schema para conocer los datasets y sus rutas "
         "exactas. Usa las funciones H3 de DuckDB para operaciones espaciales "
@@ -639,6 +920,18 @@ def analyst_persona() -> str:
         "register_hex_tiles + get_hex_tile_status (visualizar un agregado SQL como capa "
         "de hexágonos en el mapa, vía el tool del mapa add_hex_tile_layer)."
     )
+    if PG_DSN:
+        text += (
+            "\n\nAdemás hay una base PostgreSQL/PostGIS (catálogo aparte de los parquet H3). "
+            "Para preguntas sobre sus datos, la regla de arriba se reemplaza por: llama "
+            "list_pg_tables (incluye notas de qué tabla usar) y get_pg_schema(tabla) antes de "
+            "escribir SQL, y ejecútalo con query_pg (PostGIS nativo — ahí sí van ST_Intersects/"
+            "ST_Contains sobre la columna geom). Prefiere las tablas/vistas de resumen y las "
+            "columnas indexadas: hay tablas de millones de filas. Solo para cruzar Postgres con "
+            "los parquet H3, o para pintarlo como hexágonos con register_hex_tiles, usa `query` "
+            "con postgres_query('pg', '<sql postgres>')."
+        )
+    return text
 
 
 _TILE_NAME_RE = re.compile(r"^[0-9a-f]{16}\.geojson$")
@@ -662,6 +955,14 @@ if __name__ == "__main__":
     print(f"DATA_DIR: {DATA_DIR}")
     print(f"TILES_DIR: {TILES_DIR}")
     print(f"Datasets encontrados: {len(datasets)} → {list(datasets)}")
+    if PG_DSN:
+        try:
+            with get_pg_connection() as pg_con:
+                print(f"Postgres: conectado, {len(_pg_relations(pg_con))} tablas/vistas legibles")
+        except Exception as e:
+            print(f"Postgres: NO disponible ({_redact(e)})")
+    else:
+        print("Postgres: deshabilitado (PG_DSN no definido)")
     print(f"Sirviendo MCP en http://127.0.0.1:{PORT}/mcp")
 
     app = mcp.streamable_http_app()

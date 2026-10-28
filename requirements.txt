@@ -4,3 +4,4 @@ uvicorn
 tabulate
 pandas
 requests
+psycopg[binary]>=3.2

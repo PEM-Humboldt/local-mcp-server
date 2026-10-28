@@ -248,6 +248,44 @@ Datasets encontrados: 2 → ['coberturas_h8', 'humedales_h8']
 Sirviendo MCP en http://127.0.0.1:8001/mcp
 ```
 
+## 3b. (Opcional) Base PostgreSQL/PostGIS junto a los parquet
+
+El servidor puede servir además una base Postgres de solo lectura, como un
+**tercer catálogo** separado del STAC y de los parquet H3. Si no se
+define `PG_DSN`, todo funciona exactamente igual que sin esta sección.
+
+| Tool | Para qué |
+|---|---|
+| `list_pg_tables` | Tablas/vistas, filas aproximadas, geometrías + notas de `pg-guide.md` |
+| `get_pg_schema(table)` | Nombre exacto, columnas, **índices** y muestra de 3 filas |
+| `query_pg(sql_query)` | SQL Postgres/PostGIS nativo, solo lectura, máx. 50 filas, timeout |
+| `query` (existente) | Cruce Postgres × parquet H3 vía `postgres_query('pg', '...')` |
+
+
+**Rol de solo lectura para el MCP**: NUNCA se debe conectar el MCP con el dueño de la base. Siempre se debe tener un usuario de solo lectura y este es el que debe estar configurado en la conexión al servidor 
+
+
+**Levantar el servidor con la base**: la cadena de conexión está en `pg.env`, la cual debe ser:
+```bash
+export PG_DSN="postgresql://<usuario>:<contraseña>@<host>:<puerto>/<base_de_datos>"
+
+```
+Una vez se tiene correctamente configurado el `pg.env`, se pueden ejecutar los siguente comendos para levantar el sevidor con las herramientas de postgres incluídas.
+
+```bash
+source pg.env
+python server.py
+# ...
+# Postgres: conectado, 56 tablas/vistas legibles
+```
+
+Si Postgres está caído, el servidor arranca igual: los tools de parquet siguen
+funcionando y los `*_pg` devuelven el error.
+
+`pg-guide.md` contiene las notas de dominio de la base (qué tabla usar, uniones,
+valores codificados). Se anexan a la salida de `list_pg_tables`, así
+que si cambias de base, cambia ese archivo (o apunta `PG_GUIDE` a otro).
+
 ## 4. Conectar geo-agent a este servidor local
 
 En el archivo de configuración de geo-agent-LIB `app/layers-input.json`:

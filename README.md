@@ -268,11 +268,14 @@ define `PG_DSN`, todo funciona exactamente igual que sin esta sección.
 Solo lo que el rol puede leer aparece en `list_pg_tables` (por eso las tablas
 `tiger`/`topology` de la imagen de PostGIS quedan fuera).
 
-**Arrancar con la base**: la cadena de conexión vive en `pg.env`, que está
-en `.gitignore`:
+**Arrancar con la base**: la cadena de conexión está en `pg.env`, la cual debe ser:
+```bash
+export PG_DSN="postgresql://<usuario>:<contraseña>@<host>:<puerto>/<base_de_datos>"
+
+```
 
 ```bash
-source pg.env      # export PG_DSN="postgresql://mcp_reader:...@127.0.0.1:5433/cifras"
+source pg.env
 python server.py
 # ...
 # Postgres: conectado, 56 tablas/vistas legibles
